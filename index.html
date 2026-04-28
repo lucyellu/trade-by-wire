@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>TRADE BY WIRE</title>
+<!-- Cursor Vibe Jam 2026 tracking widget — required for jam entry -->
+<script async src="https://vibej.am/2026/widget.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+  /* ── Reset & Base ─────────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #000;
+    font-family: 'Share Tech Mono', 'IBM Plex Mono', 'Courier New', monospace;
+    color: #00ff85;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+  }
+  /* CRT phosphor palette */
+  :root {
+    --phosphor: #00ff85;
+    --phosphor-dim: #4a8a5e;
+    --phosphor-glow: rgba(0,255,133,0.6);
+    --amber: #ffc868;
+    --amber-dim: #806430;
+    --alert: #ff4040;
+    --bg: #0b0e0a;
+    --bezel: #1a1d18;
+  }
+
+  /* ── Outer wrapper: bezel + curvature ──────────────────────────── */
+  #bezel {
+    position: fixed; inset: 0;
+    background: radial-gradient(ellipse at center, var(--bg) 0%, #050605 100%);
+    display: flex; align-items: center; justify-content: center;
+    padding: 12px;
+  }
+
+  /* ── CRT screen — 4:3 inner viewport with corner brackets ──────── */
+  #screen {
+    position: relative;
+    width: min(96vw, calc(96vh * 4 / 3));
+    aspect-ratio: 4 / 3;
+    max-height: 96vh;
+    background: var(--bg);
+    box-shadow:
+      0 0 60px rgba(0,255,133,0.08),
+      inset 0 0 80px rgba(0,255,133,0.04),
+      inset 0 0 4px rgba(0,255,133,0.18);
+    overflow: hidden;
+  }
+
+  /* Corner brackets (stylized "[ ]" framing) */
+  .corner {
+    position: absolute;
+    width: 38px; height: 38px;
+    border: 2px solid var(--phosphor);
+    pointer-events: none;
+    box-shadow: 0 0 6px var(--phosphor-glow);
+  }
+  .corner.tl { top: 10px; left: 10px; border-right: 0; border-bottom: 0; }
+  .corner.tr { top: 10px; right: 10px; border-left: 0; border-bottom: 0; }
+  .corner.bl { bottom: 10px; left: 10px; border-right: 0; border-top: 0; }
+  .corner.br { bottom: 10px; right: 10px; border-left: 0; border-top: 0; }
+
+  /* Scanlines overlay */
+  #scanlines {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(0,0,0,0.20) 0px,
+      rgba(0,0,0,0.20) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    z-index: 50;
+    mix-blend-mode: multiply;
+  }
+  /* Subtle horizontal sweep — slow vertical band moving down */
+  @keyframes sweep {
+    0% { transform: translateY(-20%); }
+    100% { transform: translateY(120%); }
+  }
+  #sweep {
+    position: absolute; inset: 0; pointer-events: none; z-index: 49;
+    background: linear-gradient(
+      to bottom,
+      transparent 45%,
+      rgba(0,255,133,0.06) 50%,
+      transparent 55%
+    );
+    height: 200%;
+    animation: sweep 8s linear infinite;
+  }
+
+  /* Vignette / barrel-shadow on edges */
+  #vignette {
+    position: absolute; inset: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse at center,
+      transparent 50%,
+      rgba(0,0,0,0.55) 100%);
+    z-index: 51;
+  }
+
+  /* Flicker — extremely subtle */
+  @keyframes flicker {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.985; }
+  }
+  #screen { animation: flicker 0.12s linear infinite; }
+
+  /* CRT text: phosphor glow + RGB chromatic fringe */
+  .phosphor {
+    color: var(--phosphor);
+    text-shadow:
+      0 0 4px var(--phosphor-glow),
+      0 0 8px rgba(0,255,133,0.3),
+      -0.5px 0 rgba(255,80,80,0.4),
+      0.5px 0 rgba(80,180,255,0.4);
+  }
+  .amber {
+    color: var(--amber);
+    text-shadow:
+      0 0 4px rgba(255,200,104,0.5),
+      -0.5px 0 rgba(255,80,80,0.3),
+      0.5px 0 rgba(255,255,80,0.3);
+  }
+  .alert {
+    color: var(--alert);
+    text-shadow: 0 0 6px rgba(255,64,64,0.6);
+  }
+  .dim { color: var(--phosphor-dim); }
+
+  /* ── HUD layout — absolute-positioned text boxes ──────────────── */
+  .hud {
+    position: absolute;
+    z-index: 10;
+    font-family: 'VT323', 'Share Tech Mono', monospace;
+    line-height: 1;
+    letter-spacing: 1px;
+  }
+  .hud .lbl { font-size: 11px; opacity: 0.75; letter-spacing: 2px; }
+  .hud .val { font-size: 22px; margin-top: 2px; font-weight: normal; }
+  .hud.big .val { font-size: 30px; }
+
+  /* Top-left: EARTH DATE / TARGET stack */
+  #hud-date  { top: 28px; left: 36px; }
+  #hud-time  { top: 60px; left: 36px; }
+
+  /* Top-right: REC / TYPE stack */
+  #hud-rec   { top: 28px; right: 36px; text-align: right; }
+  #hud-type  { top: 60px; right: 36px; text-align: right; }
+
+  /* Pulsing rec dot */
+  .rec-dot {
+    display: inline-block; width: 10px; height: 10px;
+    background: var(--alert); border-radius: 50%;
+    margin-right: 6px; vertical-align: middle;
+    box-shadow: 0 0 6px var(--alert);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.3; transform: scale(0.85); }
+  }
+
+  /* Bottom-left: TARGET / TYPE labels */
+  #hud-target  { bottom: 158px; left: 36px; }
+  #hud-typeval { bottom: 110px; left: 36px; }
+  /* Bottom-right: BATTERY */
+  #hud-battery { bottom: 158px; right: 36px; text-align: right; }
+
+  /* Battery bar */
+  .battery-bar {
+    margin-top: 4px;
+    width: 140px; height: 18px;
+    border: 1.5px solid var(--phosphor);
+    padding: 2px;
+    display: inline-block;
+    vertical-align: middle;
+  }
+  .battery-bar > div {
+    height: 100%;
+    background: var(--phosphor);
+    box-shadow: 0 0 4px var(--phosphor-glow);
+    transition: width 0.4s ease, background 0.2s;
+  }
+  .battery-bar.low > div { background: var(--amber); box-shadow: 0 0 4px rgba(255,200,104,0.5); }
+  .battery-bar.crit > div { background: var(--alert); box-shadow: 0 0 4px rgba(255,64,64,0.6); }
+
+  /* P&L + POSITION + SESSION row above buttons */
+  #hud-pnl       { bottom: 110px; left: 50%; transform: translateX(-50%); text-align: center; }
+  #hud-position  { bottom: 158px; left: 50%; transform: translateX(-50%); text-align: center; }
+
+  /* Trade buttons row at very bottom */
+  #buttons {
+    position: absolute;
+    left: 36px; right: 36px; bottom: 30px;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+    z-index: 10;
+  }
+  .tbtn {
+    background: rgba(0,0,0,0.5);
+    border: 2px solid var(--phosphor);
+    color: var(--phosphor);
+    font-family: 'VT323', 'Share Tech Mono', monospace;
+    font-size: 22px; letter-spacing: 3px;
+    padding: 14px 4px;
+    cursor: pointer;
+    text-transform: uppercase;
+    box-shadow:
+      0 0 4px rgba(0,255,133,0.3),
+      inset 0 0 12px rgba(0,255,133,0.05);
+    transition: background 0.1s, border-color 0.1s;
+    text-shadow: 0 0 4px var(--phosphor-glow);
+    -webkit-tap-highlight-color: transparent;
+  }
+  .tbtn:hover, .tbtn:active {
+    background: rgba(0,255,133,0.18);
+    box-shadow:
+      0 0 12px rgba(0,255,133,0.5),
+      inset 0 0 20px rgba(0,255,133,0.18);
+  }
+  .tbtn .tk {
+    display: block;
+    font-size: 11px;
+    color: var(--phosphor-dim);
+    letter-spacing: 1px;
+    margin-top: 4px;
+  }
+  .tbtn.short { border-color: var(--alert); color: var(--alert); text-shadow: 0 0 4px rgba(255,64,64,0.6); }
+  .tbtn.short:hover, .tbtn.short:active { background: rgba(255,64,64,0.18); }
+  .tbtn.long  { border-color: var(--phosphor); }
+  .tbtn.flat  { border-color: var(--amber); color: var(--amber); text-shadow: 0 0 4px rgba(255,200,104,0.5); }
+  .tbtn.flat:hover, .tbtn.flat:active { background: rgba(255,200,104,0.18); }
+
+  /* Chart canvas — central area */
+  #chart-frame {
+    position: absolute;
+    top: 100px; bottom: 200px;
+    left: 80px; right: 80px;
+    border: 1px solid rgba(0,255,133,0.25);
+    z-index: 5;
+  }
+  #chart {
+    width: 100%; height: 100%;
+    display: block;
+  }
+  /* Tiny corner brackets on chart frame */
+  .chart-corner {
+    position: absolute;
+    width: 14px; height: 14px;
+    border-color: var(--phosphor);
+    border-style: solid;
+    box-shadow: 0 0 4px var(--phosphor-glow);
+  }
+  .chart-corner.tl { top: -1px; left: -1px; border-width: 1.5px 0 0 1.5px; }
+  .chart-corner.tr { top: -1px; right: -1px; border-width: 1.5px 1.5px 0 0; }
+  .chart-corner.bl { bottom: -1px; left: -1px; border-width: 0 0 1.5px 1.5px; }
+  .chart-corner.br { bottom: -1px; right: -1px; border-width: 0 1.5px 1.5px 0; }
+
+  /* Boot loader overlay */
+  #boot {
+    position: absolute; inset: 0;
+    background: var(--bg);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    z-index: 200;
+    font-family: 'VT323', monospace;
+    font-size: 22px;
+  }
+  #boot.hidden { display: none; }
+  .boot-line { margin: 4px 0; opacity: 0; animation: bootLine 0.4s forwards; }
+  .boot-line:nth-child(1) { animation-delay: 0.0s; }
+  .boot-line:nth-child(2) { animation-delay: 0.4s; }
+  .boot-line:nth-child(3) { animation-delay: 0.8s; }
+  .boot-line:nth-child(4) { animation-delay: 1.2s; }
+  .boot-line:nth-child(5) { animation-delay: 1.6s; }
+  @keyframes bootLine {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  /* Cursor blink */
+  .cursor::after {
+    content: '_';
+    animation: blink 1s step-end infinite;
+  }
+  @keyframes blink {
+    50% { opacity: 0; }
+  }
+
+  /* Mobile portrait: tighter padding, smaller text */
+  @media (max-width: 600px) and (orientation: portrait) {
+    #screen { aspect-ratio: 3 / 4; max-height: 100vh; width: 100vw; }
+    .corner { width: 26px; height: 26px; }
+    #hud-date, #hud-time { left: 22px; }
+    #hud-rec, #hud-type  { right: 22px; }
+    #hud-target, #hud-typeval { left: 22px; }
+    #hud-battery { right: 22px; }
+    .hud .val { font-size: 18px; }
+    .hud.big .val { font-size: 24px; }
+    .battery-bar { width: 100px; }
+    #buttons { left: 22px; right: 22px; bottom: 22px; gap: 8px; }
+    .tbtn { padding: 18px 4px; font-size: 18px; }
+    #chart-frame { left: 22px; right: 22px; top: 90px; bottom: 220px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="bezel">
+  <div id="screen">
+    <!-- Decorative -->
+    <div class="corner tl"></div>
+    <div class="corner tr"></div>
+    <div class="corner bl"></div>
+    <div class="corner br"></div>
+    <div id="scanlines"></div>
+    <div id="sweep"></div>
+    <div id="vignette"></div>
+
+    <!-- HUD: top -->
+    <div id="hud-date" class="hud">
+      <div class="lbl phosphor">EARTH DATE</div>
+      <div class="val phosphor" id="val-date">06.30.2026</div>
+    </div>
+    <div id="hud-time" class="hud">
+      <div class="lbl phosphor">SESSION</div>
+      <div class="val phosphor" id="val-time">00:00 / 01:00</div>
+    </div>
+    <div id="hud-rec" class="hud">
+      <div class="val alert"><span class="rec-dot"></span>REC</div>
+      <div class="lbl phosphor" style="margin-top:6px;">VIDEO</div>
+    </div>
+    <div id="hud-type" class="hud">
+      <div class="lbl phosphor">TYPE</div>
+      <div class="val amber" id="val-type">EQUITY · 1HR</div>
+    </div>
+
+    <!-- HUD: chart -->
+    <div id="chart-frame">
+      <div class="chart-corner tl"></div>
+      <div class="chart-corner tr"></div>
+      <div class="chart-corner bl"></div>
+      <div class="chart-corner br"></div>
+      <canvas id="chart"></canvas>
+    </div>
+
+    <!-- HUD: bottom row -->
+    <div id="hud-target" class="hud big">
+      <div class="lbl phosphor">TARGET</div>
+      <div class="val phosphor" id="val-target">SPY</div>
+    </div>
+    <div id="hud-typeval" class="hud">
+      <div class="lbl phosphor">FREQ</div>
+      <div class="val amber">06:30 · 07:30 PT</div>
+    </div>
+    <div id="hud-position" class="hud">
+      <div class="lbl phosphor">POSITION</div>
+      <div class="val phosphor" id="val-position">— FLAT —</div>
+    </div>
+    <div id="hud-pnl" class="hud big">
+      <div class="lbl phosphor">P/L</div>
+      <div class="val phosphor" id="val-pnl">+$0.00</div>
+    </div>
+    <div id="hud-battery" class="hud">
+      <div class="lbl phosphor">BATTERY</div>
+      <div style="display:inline-block;">
+        <span class="val phosphor" id="val-batpct">100%</span>
+        <span class="battery-bar" id="bat-bar"><div style="width:100%"></div></span>
+      </div>
+    </div>
+
+    <!-- HUD: trade buttons -->
+    <div id="buttons">
+      <button class="tbtn short" id="btn-short">SHORT<span class="tk">↓ / S</span></button>
+      <button class="tbtn flat"  id="btn-flat">FLAT<span class="tk">SPACE</span></button>
+      <button class="tbtn long"  id="btn-long">LONG<span class="tk">↑ / W</span></button>
+    </div>
+
+    <!-- Boot loader -->
+    <div id="boot">
+      <div class="boot-line phosphor">> CRT MONITOR ONLINE</div>
+      <div class="boot-line phosphor">> RECEIVING SIGNAL...</div>
+      <div class="boot-line phosphor">> TARGET ACQUIRED: SPY</div>
+      <div class="boot-line amber">> AWAITING TRANSMISSION</div>
+      <div class="boot-line phosphor cursor">&nbsp;</div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════
+   TRADE BY WIRE — Day 1 scaffold
+   - HUD layout, scanlines, frame
+   - Loads bundled SPY morning hour, draws price chart
+   - Trade buttons present but not wired (Day 2)
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const canvas = document.getElementById('chart');
+const ctx = canvas.getContext('2d');
+
+let bars = [];          // [{t,o,h,l,c,v}, ...]
+let curBarIdx = 0;      // current playback position (driven by demo timer)
+let demoTimer = null;
+
+function resizeCanvas() {
+  const r = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = r.width * dpr;
+  canvas.height = r.height * dpr;
+  ctx.scale(dpr, dpr);
+}
+
+function ptDateStrToday() {
+  // YYYY-MM-DD in America/Los_Angeles
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  const parts = fmt.formatToParts(new Date());
+  const get = k => parts.find(p => p.type === k)?.value;
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+function ptDateStrOffset(daysBack) {
+  const today = ptDateStrToday();
+  const [y, m, d] = today.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d - daysBack, 12, 0, 0));
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth()+1).padStart(2,'0')}-${String(t.getUTCDate()).padStart(2,'0')}`;
+}
+
+/* Find the most recent SPY bundle that exists (skips weekends/holidays) */
+async function loadLatestSPY() {
+  for (let back = 0; back < 14; back++) {
+    const date = ptDateStrOffset(back);
+    try {
+      const r = await fetch(`data/bars_SPY_${date}.json`, { cache: 'force-cache' });
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j && Array.isArray(j.bars) && j.bars.length >= 5) {
+        document.getElementById('val-date').textContent = date.split('-').reverse().join('.');
+        return j.bars;
+      }
+    } catch {}
+  }
+  return [];
+}
+
+/* Draw the price chart inside the chart canvas */
+function drawChart() {
+  const w = canvas.width, h = canvas.height;
+  const dpr = window.devicePixelRatio || 1;
+  // Logical (CSS pixel) dimensions for drawing math
+  const W = w / dpr, H = h / dpr;
+  ctx.clearRect(0, 0, W, H);
+
+  if (bars.length < 2) {
+    ctx.fillStyle = '#4a8a5e';
+    ctx.font = '14px "VT323", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('NO SIGNAL', W/2, H/2);
+    return;
+  }
+
+  const closes = bars.map(b => b.c);
+  const min = Math.min(...closes), max = Math.max(...closes);
+  const rng = (max - min) || 1;
+  const pad = 14;
+  const cx = (i) => pad + (i / (bars.length - 1)) * (W - 2*pad);
+  const cy = (p) => pad + (1 - (p - min) / rng) * (H - 2*pad);
+
+  // Grid (faint)
+  ctx.strokeStyle = 'rgba(0,255,133,0.08)';
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 4; i++) {
+    const y = pad + (i/4) * (H - 2*pad);
+    ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(W-pad, y); ctx.stroke();
+  }
+
+  // Future portion (dim — past mktBarIdx)
+  ctx.strokeStyle = 'rgba(74,138,94,0.4)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = curBarIdx; i < bars.length; i++) {
+    const x = cx(i), y = cy(bars[i].c);
+    if (i === curBarIdx) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Past + current portion (bright phosphor)
+  ctx.strokeStyle = '#00ff85';
+  ctx.lineWidth = 2;
+  ctx.shadowColor = 'rgba(0,255,133,0.7)';
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  for (let i = 0; i <= curBarIdx; i++) {
+    const x = cx(i), y = cy(bars[i].c);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Reticle on current bar
+  if (curBarIdx >= 0 && curBarIdx < bars.length) {
+    const x = cx(curBarIdx), y = cy(bars[curBarIdx].c);
+    ctx.strokeStyle = '#ffc868';
+    ctx.lineWidth = 1;
+    // Vertical guide
+    ctx.setLineDash([2, 3]);
+    ctx.beginPath(); ctx.moveTo(x, pad); ctx.lineTo(x, H-pad); ctx.stroke();
+    ctx.setLineDash([]);
+    // Reticle (cross + circle)
+    ctx.strokeStyle = '#ffc868';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI*2); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x-12, y); ctx.lineTo(x-8, y);
+    ctx.moveTo(x+8, y);  ctx.lineTo(x+12, y);
+    ctx.moveTo(x, y-12); ctx.lineTo(x, y-8);
+    ctx.moveTo(x, y+8);  ctx.lineTo(x, y+12);
+    ctx.stroke();
+    // Right-side price label
+    ctx.fillStyle = '#ffc868';
+    ctx.font = '12px "VT323", monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText('$' + bars[curBarIdx].c.toFixed(2), W-pad-2, y-6);
+  }
+
+  // Min/max labels (corners)
+  ctx.fillStyle = '#4a8a5e';
+  ctx.font = '11px "VT323", monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('$' + max.toFixed(2), pad+2, pad+10);
+  ctx.fillText('$' + min.toFixed(2), pad+2, H-pad-2);
+}
+
+/* Demo loop: advance current bar, redraw, update time HUD */
+function demoStep() {
+  if (curBarIdx < bars.length - 1) curBarIdx++;
+  else curBarIdx = 0;  // loop
+  drawChart();
+  const minute = curBarIdx;
+  const ss = String((curBarIdx * 60) % 60).padStart(2,'0');  // dummy
+  document.getElementById('val-time').textContent =
+    `${String(minute).padStart(2,'0')}:00 / 60:00`;
+}
+
+/* Boot sequence: hide loader after animations complete, then render */
+async function boot() {
+  bars = await loadLatestSPY();
+  resizeCanvas();
+  drawChart();
+  // Hide boot overlay after ~2.5s
+  setTimeout(() => {
+    document.getElementById('boot').classList.add('hidden');
+    // Start demo playback
+    if (demoTimer) clearInterval(demoTimer);
+    demoTimer = setInterval(demoStep, 200);  // fast demo: 1 bar per 200ms
+  }, 2400);
+}
+window.addEventListener('load', boot);
+window.addEventListener('resize', () => { resizeCanvas(); drawChart(); });
+
+/* Trade buttons are placeholders for Day 2 wiring */
+document.getElementById('btn-short').addEventListener('click', () => flashHUD('SHORT'));
+document.getElementById('btn-flat').addEventListener('click',  () => flashHUD('— FLAT —'));
+document.getElementById('btn-long').addEventListener('click',  () => flashHUD('LONG'));
+
+window.addEventListener('keydown', e => {
+  if (e.code === 'ArrowDown' || e.code === 'KeyS') flashHUD('SHORT');
+  if (e.code === 'Space')                            flashHUD('— FLAT —');
+  if (e.code === 'ArrowUp'   || e.code === 'KeyW') flashHUD('LONG');
+});
+
+function flashHUD(text) {
+  const el = document.getElementById('val-position');
+  el.textContent = text;
+  // Brief glow flash
+  el.style.transition = 'none';
+  el.style.textShadow = '0 0 16px var(--phosphor-glow), 0 0 32px rgba(0,255,133,0.6)';
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      el.style.transition = 'text-shadow 0.4s';
+      el.style.textShadow = '';
+    });
+  });
+}
+</script>
+</body>
+</html>
