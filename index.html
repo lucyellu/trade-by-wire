@@ -1490,49 +1490,61 @@ function resizeCanvas() {
   resizeOneCanvas(macdCanvas, macdCtx);
 }
 
-// Live-fetch 1-minute bars for an arbitrary ticker via Yahoo Finance (through a CORS proxy).
+// Live-fetch 1-minute bars for an arbitrary ticker via Yahoo Finance (through a CORS proxy chain).
+// corsproxy.io started 403'ing on free tier (~2026-04), so allorigins.win is now primary.
 // Returns the bundle-shaped object {date, bars: [{c,o,h,l,v,t}, ...]} or null on failure.
 // Caches in-memory by ticker for the session so repeated plays don't re-fetch.
 const _yahooCache = {};
+const PROXY_CHAIN = [
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+];
+async function fetchProxied(url) {
+  for (const wrap of PROXY_CHAIN) {
+    try {
+      const r = await fetch(wrap(url), { cache: 'no-store' });
+      if (!r.ok) continue;
+      const text = await r.text();
+      if (!text) continue;
+      try { return JSON.parse(text); } catch { continue; }
+    } catch { /* try next proxy */ }
+  }
+  return null;
+}
 async function fetchYahooBars(ticker) {
   ticker = (ticker || '').trim().toUpperCase();
   if (!/^[A-Z][A-Z0-9.\-]{0,5}$/.test(ticker)) return null;
   if (_yahooCache[ticker]) return _yahooCache[ticker];
   const yahoo = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1m&range=1d`;
-  // CORS proxy — corsproxy.io is a public free proxy used by similar dashboards in this repo.
-  const proxied = `https://corsproxy.io/?url=${encodeURIComponent(yahoo)}`;
-  try {
-    const r = await fetch(proxied, { cache: 'no-store' });
-    if (!r.ok) return null;
-    const j = await r.json();
-    const result = j?.chart?.result?.[0];
-    if (!result) return null;
-    const ts = result.timestamp || [];
-    const q  = result.indicators?.quote?.[0];
-    if (!q || !ts.length) return null;
-    const bars = [];
-    for (let i = 0; i < ts.length && bars.length < 60; i++) {
-      const c = q.close?.[i];
-      if (typeof c !== 'number' || isNaN(c)) continue;
-      bars.push({
-        t: ts[i] * 1000,
-        o: q.open?.[i]   ?? c,
-        h: q.high?.[i]   ?? c,
-        l: q.low?.[i]    ?? c,
-        c: c,
-        v: q.volume?.[i] ?? 0,
-      });
-    }
-    if (bars.length < 5) return null;
-    const date = new Date(ts[0] * 1000).toISOString().slice(0, 10);
-    const bundle = { date, bars };
-    _yahooCache[ticker] = bundle;
-    // Register the ticker in SYM_INFO so HUD labels render correctly
-    if (!SYM_INFO[ticker]) {
-      SYM_INFO[ticker] = { sym: ticker, label: ticker, type: 'EQUITY · 1MIN' };
-    }
-    return bundle;
-  } catch { return null; }
+  const j = await fetchProxied(yahoo);
+  if (!j) return null;
+  const result = j?.chart?.result?.[0];
+  if (!result) return null;
+  const ts = result.timestamp || [];
+  const q  = result.indicators?.quote?.[0];
+  if (!q || !ts.length) return null;
+  const bars = [];
+  for (let i = 0; i < ts.length && bars.length < 60; i++) {
+    const c = q.close?.[i];
+    if (typeof c !== 'number' || isNaN(c)) continue;
+    bars.push({
+      t: ts[i] * 1000,
+      o: q.open?.[i]   ?? c,
+      h: q.high?.[i]   ?? c,
+      l: q.low?.[i]    ?? c,
+      c: c,
+      v: q.volume?.[i] ?? 0,
+    });
+  }
+  if (bars.length < 5) return null;
+  const date = new Date(ts[0] * 1000).toISOString().slice(0, 10);
+  const bundle = { date, bars };
+  _yahooCache[ticker] = bundle;
+  // Register the ticker in SYM_INFO so HUD labels render correctly
+  if (!SYM_INFO[ticker]) {
+    SYM_INFO[ticker] = { sym: ticker, label: ticker, type: 'EQUITY · 1MIN' };
+  }
+  return bundle;
 }
 
 // Try to fetch a specific bundle. If date omitted, walks back from today up to 14d.
