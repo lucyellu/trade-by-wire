@@ -14,6 +14,8 @@ CLAUDE.md
 _make_shortcut.ps1
 tbw_launch.bat
 tbw_icon_preview.png
+_tbw_test.mjs
+_served.html
 
 # OS junk
 .DS_Store
